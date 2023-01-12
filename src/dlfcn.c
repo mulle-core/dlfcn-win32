@@ -216,6 +216,35 @@ static void save_err_ptr_str( const void *ptr, DWORD dwMessageId )
     save_err_str( ptr_buf, dwMessageId );
 }
 
+static UINT MySetErrorMode( UINT uMode )
+{
+    static BOOL (WINAPI *SetThreadErrorModePtr)(DWORD, DWORD *) = NULL;
+    static BOOL failed = FALSE;
+    HMODULE kernel32;
+    DWORD oldMode;
+
+    if( !failed && SetThreadErrorModePtr == NULL )
+    {
+        kernel32 = GetModuleHandleA( "Kernel32.dll" );
+        if( kernel32 != NULL )
+            SetThreadErrorModePtr = (BOOL (WINAPI *)(DWORD, DWORD *)) (LPVOID) GetProcAddress( kernel32, "SetThreadErrorMode" );
+        if( SetThreadErrorModePtr == NULL )
+            failed = TRUE;
+    }
+
+    if( !failed )
+    {
+        if( !SetThreadErrorModePtr( uMode, &oldMode ) )
+            return 0;
+        else
+            return oldMode;
+    }
+    else
+    {
+        return SetErrorMode( uMode );
+    }
+}
+
 static HMODULE MyGetModuleHandleFromAddress( const void *addr )
 {
     static BOOL (WINAPI *GetModuleHandleExAPtr)(DWORD, LPCSTR, HMODULE *) = NULL;
@@ -229,7 +258,7 @@ static HMODULE MyGetModuleHandleFromAddress( const void *addr )
     {
         kernel32 = GetModuleHandleA( "Kernel32.dll" );
         if( kernel32 != NULL )
-            GetModuleHandleExAPtr = (BOOL (WINAPI *)(DWORD, LPCSTR, HMODULE *)) GetProcAddress( kernel32, "GetModuleHandleExA" );
+            GetModuleHandleExAPtr = (BOOL (WINAPI *)(DWORD, LPCSTR, HMODULE *)) (LPVOID) GetProcAddress( kernel32, "GetModuleHandleExA" );
         if( GetModuleHandleExAPtr == NULL )
             failed = TRUE;
     }
@@ -270,21 +299,21 @@ static BOOL MyEnumProcessModules( HANDLE hProcess, HMODULE *lphModule, DWORD cb,
         /* Windows 7 and newer versions have K32EnumProcessModules in Kernel32.dll which is always pre-loaded */
         psapi = GetModuleHandleA( "Kernel32.dll" );
         if( psapi != NULL )
-            EnumProcessModulesPtr = (BOOL (WINAPI *)(HANDLE, HMODULE *, DWORD, LPDWORD)) GetProcAddress( psapi, "K32EnumProcessModules" );
+            EnumProcessModulesPtr = (BOOL (WINAPI *)(HANDLE, HMODULE *, DWORD, LPDWORD)) (LPVOID) GetProcAddress( psapi, "K32EnumProcessModules" );
 
         /* Windows Vista and older version have EnumProcessModules in Psapi.dll which needs to be loaded */
         if( EnumProcessModulesPtr == NULL )
         {
             /* Do not let Windows display the critical-error-handler message box */
-            uMode = SetErrorMode( SEM_FAILCRITICALERRORS );
+            uMode = MySetErrorMode( SEM_FAILCRITICALERRORS );
             psapi = LoadLibraryA( "Psapi.dll" );
             if( psapi != NULL )
             {
-                EnumProcessModulesPtr = (BOOL (WINAPI *)(HANDLE, HMODULE *, DWORD, LPDWORD)) GetProcAddress( psapi, "EnumProcessModules" );
+                EnumProcessModulesPtr = (BOOL (WINAPI *)(HANDLE, HMODULE *, DWORD, LPDWORD)) (LPVOID) GetProcAddress( psapi, "EnumProcessModules" );
                 if( EnumProcessModulesPtr == NULL )
                     FreeLibrary( psapi );
             }
-            SetErrorMode( uMode );
+            MySetErrorMode( uMode );
         }
 
         if( EnumProcessModulesPtr == NULL )
@@ -306,7 +335,7 @@ void *dlopen( const char *file, int mode )
     error_occurred = FALSE;
 
     /* Do not let Windows display the critical-error-handler message box */
-    uMode = SetErrorMode( SEM_FAILCRITICALERRORS );
+    uMode = MySetErrorMode( SEM_FAILCRITICALERRORS );
 
     if( file == NULL )
     {
@@ -399,7 +428,7 @@ void *dlopen( const char *file, int mode )
     }
 
     /* Return to previous state of the error-mode bit flags. */
-    SetErrorMode( uMode );
+    MySetErrorMode( uMode );
 
     return (void *) hModule;
 }
@@ -568,14 +597,20 @@ char *dlerror( void )
 static BOOL get_image_section( HMODULE module, int index, void **ptr, DWORD *size )
 {
     IMAGE_DOS_HEADER *dosHeader;
+    IMAGE_NT_HEADERS *ntHeaders;
     IMAGE_OPTIONAL_HEADER *optionalHeader;
 
     dosHeader = (IMAGE_DOS_HEADER *) module;
 
-    if( dosHeader->e_magic != 0x5A4D )
+    if( dosHeader->e_magic != IMAGE_DOS_SIGNATURE )
         return FALSE;
 
-    optionalHeader = (IMAGE_OPTIONAL_HEADER *) ( (BYTE *) module + dosHeader->e_lfanew + 24 );
+    ntHeaders = (IMAGE_NT_HEADERS *) ( (BYTE *) dosHeader + dosHeader->e_lfanew );
+
+    if( ntHeaders->Signature != IMAGE_NT_SIGNATURE )
+        return FALSE;
+
+    optionalHeader = &ntHeaders->OptionalHeader;
 
     if( optionalHeader->Magic != IMAGE_NT_OPTIONAL_HDR_MAGIC )
         return FALSE;
@@ -645,16 +680,54 @@ static BOOL is_valid_address( const void *addr )
     return TRUE;
 }
 
+#if defined(_M_ARM64) || defined(__aarch64__)
+static INT64 sign_extend(UINT64 value, UINT bits)
+{
+    const UINT left = 64 - bits;
+    const INT64 m1 = -1;
+    const INT64 wide = (INT64) (value << left);
+    const INT64 sign = ( wide < 0 ) ? ( m1 << left ) : 0;
+
+    return value | sign;
+}
+#endif
+
 /* Return state if address points to an import thunk
  *
- * An import thunk is setup with a 'jmp' instruction followed by an
+ * On x86, an import thunk is setup with a 'jmp' instruction followed by an
  * absolute address (32bit) or relative offset (64bit) pointing into
  * the import address table (iat), which is partially maintained by
  * the runtime linker.
+ *
+ * On ARM64, an import thunk is also a relative jump pointing into the
+ * import address table, implemented by the following three instructions:
+ * 
+ *      adrp x16, [page_offset]
+ * Calculates the page address (aligned to 4KB) the IAT is at, based 
+ * on the value of x16, with page_offset. 
+ *
+ *      ldr  x16, [x16, offset]
+ * Calculates the final IAT address, x16 <- x16 + offset.
+ * 
+ *      br   x16
+ * Jump to the address in x16.
+ * 
+ * The register used here is hardcoded to be x16.
  */
 static BOOL is_import_thunk( const void *addr )
 {
+#if defined(_M_ARM64) || defined(__aarch64__)
+    ULONG opCode1 = * (ULONG *) ( (BYTE *) addr );
+    ULONG opCode2 = * (ULONG *) ( (BYTE *) addr + 4 );
+    ULONG opCode3 = * (ULONG *) ( (BYTE *) addr + 8 );
+
+    return (opCode1 & 0x9f00001f) == 0x90000010    /* adrp x16, [page_offset] */
+        && (opCode2 & 0xffe003ff) == 0xf9400210    /* ldr  x16, [x16, offset] */
+        && opCode3 == 0xd61f0200                   /* br   x16 */
+        ? TRUE : FALSE;
+#else
     return *(short *) addr == 0x25ff ? TRUE : FALSE;
+#endif
 }
 
 /* Return adress from the import address table (iat),
@@ -663,11 +736,32 @@ static BOOL is_import_thunk( const void *addr )
 static void *get_address_from_import_address_table( void *iat, DWORD iat_size, const void *addr )
 {
     BYTE *thkp = (BYTE *) addr;
+#if defined(_M_ARM64) || defined(__aarch64__)
+    /*
+     *  typical import thunk in ARM64:
+     *  0x7ff772ae78c0 <+25760>: adrp   x16, 1
+     *  0x7ff772ae78c4 <+25764>: ldr    x16, [x16, #0xdc0]
+     *  0x7ff772ae78c8 <+25768>: br     x16
+     */
+    ULONG opCode1 = * (ULONG *) ( (BYTE *) addr );
+    ULONG opCode2 = * (ULONG *) ( (BYTE *) addr + 4 );
+
+    /* Extract the offset from adrp instruction */
+    UINT64 pageLow2 = (opCode1 >> 29) & 3;
+    UINT64 pageHigh19 = (opCode1 >> 5) & ~(~0ull << 19);
+    INT64 page = sign_extend((pageHigh19 << 2) | pageLow2, 21) << 12;
+
+    /* Extract the offset from ldr instruction */
+    UINT64 offset = ((opCode2 >> 10) & ~(~0ull << 12)) << 3;
+
+    /* Calculate the final address */
+    BYTE *ptr = (BYTE *) ( (ULONG64) thkp & ~0xfffull ) + page + offset;
+#else
     /* Get offset from thunk table (after instruction 0xff 0x25)
      *   4018c8 <_VirtualQuery>: ff 25 4a 8a 00 00
      */
     ULONG offset = *(ULONG *)( thkp + 2 );
-#ifdef _WIN64
+#if defined(_M_AMD64) || defined(__x86_64__)
     /* On 64 bit the offset is relative
      *      4018c8:   ff 25 4a 8a 00 00    jmpq    *0x8a4a(%rip)    # 40a318 <__imp_VirtualQuery>
      * And can be also negative (MSVC in WDK)
@@ -680,6 +774,7 @@ static void *get_address_from_import_address_table( void *iat, DWORD iat_size, c
      *   4019b4:    ff 25 90 71 40 00    jmp    *0x40719
      */
     BYTE *ptr = (BYTE *) offset;
+#endif
 #endif
 
     if( !is_valid_address( ptr ) || ptr < (BYTE *) iat || ptr > (BYTE *) iat + iat_size )
