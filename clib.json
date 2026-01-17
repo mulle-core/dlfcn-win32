@@ -1,0 +1,13 @@
+{
+   "name" : "dlfcn-win32",
+   "version" : "v1.3.0",
+   "description" : "dlfcn-win32 is an implementation of dlfcn for Windows",
+   "keywords" : [],
+   "license" : "MIT",
+   "repo" : "mulle-core/dlfcn-win32",
+   "src" : [
+      "src/dlfcn.c",
+      "src/dlfcn.h"
+   ]
+}
+

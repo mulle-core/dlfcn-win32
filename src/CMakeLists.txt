@@ -17,6 +17,7 @@ set_target_properties(dl PROPERTIES DEFINE_SYMBOL "")
 if (BUILD_SHARED_LIBS)
     target_compile_definitions(dl PUBLIC DLFCN_WIN32_SHARED)
 endif (BUILD_SHARED_LIBS)
+target_compile_definitions(dl PUBLIC DLFCN_WIN32_EXPORTS)
 
 install (TARGETS dl EXPORT dlfcn-win32-targets
                     RUNTIME DESTINATION bin

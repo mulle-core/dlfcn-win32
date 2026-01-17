@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8.11...3.2)
+cmake_minimum_required( VERSION 3.19...99.99) # for REAL_PATH
 
 if (NOT DEFINED CMAKE_BUILD_TYPE)
   set (CMAKE_BUILD_TYPE Release CACHE STRING "Build type")
@@ -9,7 +9,7 @@ project (dlfcn-win32 C)
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake/modules")
 include(Macros)
 
-option(BUILD_SHARED_LIBS "shared/static libs" ON) 
+# option(BUILD_SHARED_LIBS "shared/static libs" ON)
 option(BUILD_TESTS "tests?" OFF)
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
