@@ -28,15 +28,38 @@
 extern "C" {
 #endif
 
-#if defined(DLFCN_WIN32_SHARED)
-#if defined(DLFCN_WIN32_EXPORTS)
+#define DLFCN_STRINGIFY_MACRO( a)   DLFCN_STRINGIFY( a)
+#define DLFCN_STRINGIFY( a)         #a
+
+
+#if defined( DLFCN_WIN32_SHARED) || defined( MULLE_INCLUDE_DYNAMIC)
+# if defined( DLFCN_WIN32_EXPORTS)
 #   define DLFCN_EXPORT __declspec(dllexport)
-#else
+# else
 #   define DLFCN_EXPORT __declspec(dllimport)
-#endif
+# endif
 #else
-#   define DLFCN_EXPORT
+# define DLFCN_EXPORT
 #endif
+
+#if defined( _WIN32) && defined( MULLE_C_TRACE_DLL_EXPORTS)
+# if defined( DLFCN_WIN32_SHARED)
+#  pragma message("DLFCN_WIN32_SHARED is defined")
+# endif
+# if defined( DLFCN_WIN32_EXPORTS)
+#  pragma message("DLFCN_WIN32_EXPORTS is defined")
+# endif
+# if defined( MULLE_INCLUDE_DYNAMIC)
+#  pragma message("MULLE_INCLUDE_DYNAMIC is defined")
+# endif
+# if defined( DLFCN_EXPORT)
+#  pragma message("DLFCN_EXPORT is defined as \"" DLFCN_STRINGIFY_MACRO( DLFCN_EXPORT) "\"")
+# else
+#  pragma message("DLFCN_EXPORT is undefined")
+# endif
+#endif
+
+
 
 /* Relocations are performed when the object is loaded. */
 #define RTLD_NOW    0

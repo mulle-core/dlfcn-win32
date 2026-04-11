@@ -56,7 +56,7 @@ typedef ULONG ULONG_PTR;
 #endif
 #endif
 
-#ifdef DLFCN_WIN32_SHARED
+#if ( defined( DLFCN_WIN32_SHARED) || defined( MULLE_INCLUDE_DYNAMIC)) && ! defined( DLFCN_WIN32_EXPORTS)
 #define DLFCN_WIN32_EXPORTS
 #endif
 #include "dlfcn.h"
